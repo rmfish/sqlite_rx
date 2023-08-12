@@ -6,6 +6,7 @@ import zlib
 
 import msgpack
 import zmq
+
 from sqlite_rx.auth import KeyMonkey
 from sqlite_rx.exception import (
     SQLiteRxCompressionError,
@@ -14,10 +15,9 @@ from sqlite_rx.exception import (
     SQLiteRxSerializationError,
 )
 
-
 DEFAULT_REQUEST_TIMEOUT = 2500
 REQUEST_RETRIES = 5
-
+DEFAULT_DATABASE_NAME = "DEFAULT"
 
 PARENT_DIR = os.path.dirname(__file__)
 
@@ -70,6 +70,9 @@ class SQLiteClient(threading.local):
         LOG.info("registered zmq poller")
         LOG.info("client %s initialisation completed", self.client_id)
         return client
+
+    def database_client(self, database: str):
+        return SQLiteDatabaseClient(database, self)
 
     def _send_request(self, request):
         try:
@@ -137,6 +140,7 @@ class SQLiteClient(threading.local):
         execute_many = kwargs.pop('execute_many', False)
         execute_script = kwargs.pop('execute_script', False)
         request_timeout = kwargs.pop('request_timeout', DEFAULT_REQUEST_TIMEOUT)
+        database = kwargs.pop('database', DEFAULT_DATABASE_NAME)
 
         # Do some client side validations.
         if execute_script and execute_many:
@@ -147,7 +151,8 @@ class SQLiteClient(threading.local):
             "query": query,
             "params": args,
             "execute_many": execute_many,
-            "execute_script": execute_script
+            "execute_script": execute_script,
+            "database": database,
         }
 
         expect_reply = True
@@ -172,10 +177,10 @@ class SQLiteClient(threading.local):
                     self._send_request(request)
 
         raise SQLiteRxConnectionError("No response after retrying. Abandoning Request")
-    
+
     def __enter__(self):
         return self
-    
+
     def __exit__(self, exc_type, exc_value, traceback):
         self.cleanup()
 
@@ -199,3 +204,26 @@ class SQLiteClient(threading.local):
                 LOG.error("ZeroMQ context is not a state to handle this request for socket")
         except Exception:
             LOG.exception("Exception while shutting down SQLiteClient")
+
+
+class SQLiteDatabaseClient:
+
+    def __init__(self, database: str, client: SQLiteClient):
+        self._database = database
+        self._client = client
+
+    def execute(self,
+                query: str,
+                *args,
+                **kwargs) -> dict:
+        kwargs['database'] = self._database
+        return self._client.execute(query, *args, **kwargs)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.cleanup()
+
+    def cleanup(self):
+        self._client.cleanup()

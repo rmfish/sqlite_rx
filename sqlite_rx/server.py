@@ -7,21 +7,20 @@ import sys
 import traceback
 import zlib
 from signal import SIGTERM, SIGINT, signal
-
 from typing import List, Union, Callable
 
 import billiard as multiprocessing
 import msgpack
 import zmq
+from tornado import ioloop, version
+from zmq.auth.ioloop import IOLoopAuthenticator
+from zmq.eventloop import zmqstream
+
 from sqlite_rx import get_version
 from sqlite_rx.auth import Authorizer, KeyMonkey
 from sqlite_rx.backup import SQLiteBackUp, RecurringTimer
 from sqlite_rx.exception import SQLiteRxBackUpError
 from sqlite_rx.exception import SQLiteRxZAPSetupError
-from tornado import ioloop, version
-from zmq.auth.ioloop import IOLoopAuthenticator
-from zmq.eventloop import zmqstream
-
 
 PARENT_DIR = os.path.dirname(__file__)
 
@@ -154,7 +153,7 @@ class SQLiteServer(SQLiteZMQProcess):
             if platform.python_implementation().lower() == 'pypy':
                 LOG.warning("Backup is not supported on PyPy python implementation")
                 raise SQLiteRxBackUpError("SQLite backup is not supported on MacOS for PyPy python implementation")
-            
+
             sqlite_backup = SQLiteBackUp(src=database, target=backup_database)
             self.back_up_recurring_thread = RecurringTimer(function=sqlite_backup, interval=backup_interval)
             self.back_up_recurring_thread.daemon = True
@@ -184,7 +183,7 @@ class SQLiteServer(SQLiteZMQProcess):
         self.rep_stream.close()
         self.socket.close()
         self.loop.stop()
-        
+
         if self.back_up_recurring_thread:
             self.back_up_recurring_thread.cancel()
         os._exit(os.EX_OK)
@@ -222,12 +221,13 @@ class QueryStreamHandler:
              auth_config: A dictionary describing what actions are authorized, denied or ignored.
 
         """
-        self._connection = sqlite3.connect(database=database,
-                                           isolation_level=None,
-                                           check_same_thread=False)
-        self._connection.execute('pragma journal_mode=wal')
-        self._connection.set_authorizer(Authorizer(config=auth_config))
-        self._cursor = self._connection.cursor()
+        self._connection_pool = ConnectionCursorPool(database, auth_config)
+        # self._connection = sqlite3.connect(database=database,
+        #                                    isolation_level=None,
+        #                                    check_same_thread=False)
+        # self._connection.execute('pragma journal_mode=wal')
+        # self._connection.set_authorizer(Authorizer(config=auth_config))
+        # self._cursor = self._connection.cursor()
         self._rep_stream = rep_stream
 
     @staticmethod
@@ -252,20 +252,22 @@ class QueryStreamHandler:
     def execute(self, message: dict, *args, **kwargs):
         execute_many = message['execute_many']
         execute_script = message['execute_script']
+        database_name = message['database']
         error = None
+        _cursor = self._connection_pool.cursor(database_name)
         try:
             if execute_script:
                 LOG.debug("Query Mode: Execute Script")
-                self._cursor.executescript(message['query'])
+                _cursor.executescript(message['query'])
             elif execute_many and message['params']:
                 LOG.debug("Query Mode: Execute Many")
-                self._cursor.executemany(message['query'], message['params'])
+                _cursor.executemany(message['query'], message['params'])
             elif message['params']:
                 LOG.debug("Query Mode: Conditional Params")
-                self._cursor.execute(message['query'], message['params'])
+                _cursor.execute(message['query'], message['params'])
             else:
                 LOG.debug("Query Mode: Default No params")
-                self._cursor.execute(message['query'])
+                _cursor.execute(message['query'])
         except Exception:
             LOG.exception("Exception while executing query %s", message['query'])
             error = self.capture_exception()
@@ -278,13 +280,13 @@ class QueryStreamHandler:
             return zlib.compress(msgpack.dumps(result))
 
         try:
-            result['items'] = list(self._cursor.fetchall())
+            result['items'] = list(_cursor.fetchall())
             # If rowcount attribute is set on the cursor object include it in the response
-            if self._cursor.rowcount > -1:
-                result['rowcount'] = self._cursor.rowcount
+            if _cursor.rowcount > -1:
+                result['rowcount'] = _cursor.rowcount
             # If lastrowid attribute is set on the cursor include it in the response
-            if self._cursor.lastrowid:
-                result['lastrowid'] = self._cursor.lastrowid
+            if _cursor.lastrowid:
+                result['lastrowid'] = _cursor.lastrowid
 
             return zlib.compress(msgpack.dumps(result))
 
@@ -292,3 +294,36 @@ class QueryStreamHandler:
             LOG.exception("Exception while collecting rows")
             result['error'] = self.capture_exception()
             return zlib.compress(msgpack.dumps(result))
+
+
+class ConnectionCursorPool:
+
+    def __init__(self, database: Union[bytes, str],
+                 auth_config: dict = None):
+        self._cursor_pool = {}
+        if ':memory:' == database:
+            self._create_connection("DEFAULT", database, auth_config)
+        elif os.path.exists(database):
+            if os.path.isfile(database):
+                self._create_connection("DEFAULT", database, auth_config)
+            elif os.path.isdir(database):
+                files = os.listdir(database)
+                for file in files:
+                    path = os.path.join(database, file)
+                    if os.path.isfile(path):
+                        try:
+                            self._create_connection(file, path, auth_config)
+                        except:
+                            pass
+
+    def _create_connection(self, name, database, auth_config):
+        connection = sqlite3.connect(database=database,
+                                     isolation_level=None,
+                                     check_same_thread=False)
+        connection.execute('pragma journal_mode=wal')
+        connection.set_authorizer(Authorizer(config=auth_config))
+        cursor = connection.cursor()
+        self._cursor_pool.update({name: cursor})
+
+    def cursor(self, database_name):
+        return self._cursor_pool[database_name]
