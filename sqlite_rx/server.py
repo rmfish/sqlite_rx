@@ -280,6 +280,7 @@ class QueryStreamHandler:
             return zlib.compress(msgpack.dumps(result))
 
         try:
+            result['keys'] = list(map(lambda x: x[0], _cursor.description))
             result['items'] = list(_cursor.fetchall())
             # If rowcount attribute is set on the cursor object include it in the response
             if _cursor.rowcount > -1:
@@ -301,28 +302,37 @@ class ConnectionCursorPool:
     def __init__(self, database: Union[bytes, str],
                  auth_config: dict = None):
         self._cursor_pool = {}
+        self._database = database
+        self._auth_config = auth_config
+        self._init_conn()
+
+    def _init_conn(self):
+        database = self._database
         if ':memory:' == database:
-            self._create_connection("DEFAULT", database, auth_config)
+            self._create_connection("DEFAULT", database, self._auth_config)
         elif os.path.exists(database):
             if os.path.isfile(database):
-                self._create_connection("DEFAULT", database, auth_config)
+                self._create_connection("DEFAULT", database, self._auth_config)
             elif os.path.isdir(database):
                 files = os.listdir(database)
                 for file in files:
-                    path = os.path.join(database, file)
-                    if os.path.isfile(path):
-                        try:
-                            self._create_connection(file, path, auth_config)
-                        except:
-                            pass
+                    if file.endswith('.db'):
+                        path = os.path.join(database, file)
+                        if os.path.isfile(path):
+                            try:
+                                self._create_connection(file, path, self._auth_config)
+                            except:
+                                pass
 
     def _create_connection(self, name, database, auth_config):
         connection = sqlite3.connect(database=database,
                                      isolation_level=None,
                                      check_same_thread=False)
-        connection.execute('pragma journal_mode=wal')
+        # connection.execute('pragma journal_mode=wal')
+        connection.execute('pragma query_only=ON')
         connection.set_authorizer(Authorizer(config=auth_config))
         cursor = connection.cursor()
+        LOG.debug("Create connection %s", name)
         self._cursor_pool.update({name: cursor})
 
     def cursor(self, database_name):

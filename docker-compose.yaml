@@ -1,13 +1,24 @@
-version: "3"
+version: "3.9"
 services:
 
   sqlite_server:
-    image: aosingh/sqlite_rx
-    command: sqlite-server --log-level DEBUG --database /data/main.db --backup-database /data/backup.db
+#    image: aosingh/sqlite_rx
+    build: .
+    command: sqlite-server --log-level DEBUG --database /data
     ports:
-      - 5001:5000
+      - 5000
     volumes:
-      - data:/data
+      - /home/ubuntu/tutake-data:/data
+    labels:
+      # 设置Host 为 whoami.docker.localhost 进行域名访问
+      - "traefik.tcp.routers.sqlite.rule=HostSNI(`sqlite.rmfish.top`)"
+      - "traefik.tcp.routers.sqlite.entrypoints=tcp"
+      - "traefik.tcp.routers.sqlite.tls.passthrough=true"
+      - "traefik.enable=true"
 
-volumes:
-  data: {}
+
+# 使用已存在的 traefik 的 network
+networks:
+  default:
+    name: traefik
+    external: true
