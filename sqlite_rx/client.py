@@ -227,14 +227,3 @@ class SQLiteDatabaseClient:
 
     def cleanup(self):
         self._client.cleanup()
-
-
-if __name__ == '__main__':
-    client = SQLiteClient("tcp://127.0.0.1:5000")
-    # client = SQLiteClient("tcp://sqlite.rmfish.top:49191")
-    meta = SQLiteDatabaseClient("xueqiu.db", client)
-
-    with meta:
-        result = meta.execute(
-            "SELECT xueqiu_index_valuation.id as xxx, xueqiu_index_valuation.ts_code, xueqiu_index_valuation.trade_date, xueqiu_index_valuation.name, xueqiu_index_valuation.ttype, xueqiu_index_valuation.pe, xueqiu_index_valuation.pe_percentile, xueqiu_index_valuation.peg, xueqiu_index_valuation.pb_percentile, xueqiu_index_valuation.pb, xueqiu_index_valuation.roe, xueqiu_index_valuation.yeild, xueqiu_index_valuation.eva_type FROM xueqiu_index_valuation LIMIT 10000")
-        print(result)
